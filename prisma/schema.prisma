@@ -1,0 +1,156 @@
+// Hunger Games Live Event – datamodell
+// Designbeslut: allt är skopat på gameId (multi-tenant per spel-säsong).
+// game_events är källan till sanning (audit log) för statistik och händelseflöde.
+//
+// Fas 4-korrigering: "Zon" är INTE en egen indelning deltagare tilldelas till
+// (det var en missuppfattning i tidigare version). En zon = platsen för ett
+// uppdrag på en riktig GPS-karta, och den fungerar som en frizon rent
+// INFORMATIVT (ingen teknisk spärr mot att bli rapporterad död där — beslutat
+// medvetet, se README). Zone-modellen är därför borttagen och ersatt med
+// latitude/longitude direkt på Mission.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum GameStatus {
+  DRAFT     // spelet är under förberedelse, ej synligt för deltagare
+  ACTIVE    // spelet pågår live
+  PAUSED    // tillfälligt pausat av admin
+  FINISHED  // spelet är avslutat
+}
+
+enum ParticipantStatus {
+  ALIVE
+  DEAD
+}
+
+enum MissionStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  FAILED
+}
+
+enum EventType {
+  KILL              // en deltagare elimineras
+  KILL_EDITED       // admin korrigerade ett kill-event
+  KILL_REVERTED     // admin ångrade ett kill-event (deltagaren återupplivas)
+  MISSION_COMPLETED
+  MISSION_FAILED
+  SYSTEM            // t.ex. "spelet startade", "uppdrag X blev aktivt"
+}
+
+enum ReportedVia {
+  SELF   // deltagaren rapporterade sin egen död
+  ADMIN  // admin registrerade det åt deltagaren
+}
+
+model Game {
+  id           String        @id @default(cuid())
+  name         String
+  status       GameStatus    @default(DRAFT)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  participants Participant[]
+  missions     Mission[]
+  weapons      Weapon[]
+  events       GameEvent[]
+
+  @@map("games")
+}
+
+model Participant {
+  id        String            @id @default(cuid())
+  gameId    String
+  game      Game              @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  name      String
+  qrToken   String            @unique // signerad, ogissbar token — se lib/auth.ts
+  status    ParticipantStatus @default(ALIVE)
+  createdAt DateTime          @default(now())
+
+  // events där denna deltagare var mördare respektive offer
+  killEvents  GameEvent[] @relation("KillerEvents")
+  deathEvents GameEvent[] @relation("VictimEvents")
+
+  @@index([gameId])
+  @@map("participants")
+}
+
+// Ett uppdrag = en kartnål på en riktig GPS-karta. Platsen är samtidigt en
+// frizon (helt informativt, ingen enforcement — se README för resonemang).
+model Mission {
+  id          String        @id @default(cuid())
+  gameId      String
+  game        Game          @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  status      MissionStatus @default(PENDING)
+  latitude    Float?
+  longitude   Float?
+  createdAt   DateTime      @default(now())
+
+  events GameEvent[]
+
+  @@index([gameId])
+  @@map("missions")
+}
+
+// Fördefinierad vapenlista — konfigureras per spel så olika säsonger kan ha olika teman.
+model Weapon {
+  id     String @id @default(cuid())
+  gameId String
+  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  name   String
+
+  @@index([gameId])
+  @@map("weapons")
+}
+
+// Central händelselogg. Alla statusändringar (kill, uppdrag) loggas här och
+// är det som statistik/adminvyn läser ifrån — aldrig separata räknare som
+// kan hamna ur synk.
+model GameEvent {
+  id     String    @id @default(cuid())
+  gameId String
+  game   Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  type   EventType
+
+  // Kill-specifika fält
+  victimId    String?
+  victim      Participant? @relation("VictimEvents", fields: [victimId], references: [id])
+  killerId    String?
+  killer      Participant? @relation("KillerEvents", fields: [killerId], references: [id])
+  weapon      String?
+  reportedVia ReportedVia?
+  reportedBy  String? // participantId (självrapport) eller adminUserId
+
+  // Uppdragsspecifikt fält (type=MISSION_COMPLETED / MISSION_FAILED / SYSTEM)
+  missionId String?
+  mission   Mission? @relation(fields: [missionId], references: [id])
+
+  // Generellt fält för fritext/metadata (t.ex. systemmeddelande)
+  note String?
+
+  createdAt DateTime  @default(now())
+  editedAt  DateTime?
+  editedBy  String? // adminUserId — endast admin kan redigera/ångra events
+
+  @@index([gameId, createdAt])
+  @@map("game_events")
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  @@map("admin_users")
+}
