@@ -15,7 +15,14 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // OBS: Vercels Supabase-integration skapar INTE en variabel som heter
+  // DATABASE_URL. Den skapar bl.a. POSTGRES_PRISMA_URL (poolad anslutning,
+  // rätt för appen i drift) och POSTGRES_URL_NON_POOLING (direkt anslutning,
+  // krävs för `prisma db push`/migrations eftersom poolade anslutningar via
+  // pgbouncer inte stödjer det). Vi använder därför de namnen direkt istället
+  // för att be användaren skapa/byta namn på variabler manuellt i Vercel.
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
 }
 
 enum GameStatus {
